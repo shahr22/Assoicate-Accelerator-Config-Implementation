@@ -1,0 +1,61 @@
+import boto3
+import json
+
+bad_port_range = {
+  "from": 0,
+  "to": 65535
+}
+
+def handler(event, context):
+    invoking_event = json.loads(event['invokingEvent'])
+    configuration_item = invoking_event["configurationItem"]
+
+    evaluation = evaluate_compliance(configuration_item)
+
+    config = boto3.client('config')
+
+    response = config.put_evaluations(
+        Evaluations=[
+            {
+                'ComplianceResourceType': invoking_event['configurationItem']['resourceType'],
+                'ComplianceResourceId': invoking_event['configurationItem']['resourceId'],
+                'ComplianceType': evaluation["compliance_type"],
+                "Annotation": evaluation["annotation"],
+                'OrderingTimestamp': invoking_event['configurationItem']['configurationItemCaptureTime']
+            },
+        ],
+        ResultToken=event['resultToken'])
+
+def evaluate_compliance(configuration_item):
+        if configuration_item["configurationItemStatus"] == "ResourceDeleted":
+            return {
+                "compliance_type": "NOT_APPLICABLE",
+                "annotation": "The configurationItem was deleted and therefore cannot be validated."
+            }
+
+        bad_rule = []
+
+        for inbound_rule in configuration_item['configuration']['ipPermissions']:
+            for cidr in inbound_rule["ipv4Ranges"]:
+                if cidr["cidrIp"] == "0.0.0.0/0" and inbound_rule["ipProtocol"] == "tcp":
+                    if check_ports(inbound_rule, bad_port_range):
+                        bad_rule.append(inbound_rule)
+                if cidr["cidrIp"] == "0.0.0.0/0" and inbound_rule["ipProtocol"] == "-1":
+                    bad_rule.append(inbound_rule)
+
+        if bad_rule:
+            return {
+                "compliance_type": "NON_COMPLIANT",
+                "annotation": "Permissions Failed"
+        }
+        else:
+            return {
+                "compliance_type": "COMPLIANT",
+                "annotation": "Permissions Passed"
+        }
+
+def check_ports(inbound_rule, bad_port_range):
+    hit = None
+    if bad_port_range['from'] == inbound_rule["fromPort"] and bad_port_range['to'] == inbound_rule["toPort"]:
+        hit = True
+    return hit
